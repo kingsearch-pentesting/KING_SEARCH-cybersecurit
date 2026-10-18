@@ -1,0 +1,16 @@
+# King Search Dashboard - robots.txt
+# https://www.robotstxt.org/robotstxt.html
+
+User-agent: *
+Allow: /
+
+# Disallow specific paths if needed
+# Disallow: /api/
+# Disallow: /admin/
+# Disallow: /private/
+
+# Sitemap
+Sitemap: https://dashboard.kingsearch.io/sitemap.xml
+
+# Crawl-delay (optional)
+# Crawl-delay: 1

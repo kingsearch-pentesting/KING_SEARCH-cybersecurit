@@ -1,0 +1,158 @@
+services:
+  # King Search Dashboard Frontend
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: king-search-dashboard
+    expose:
+      - "3000"
+    environment:
+      NODE_ENV: production
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_PRICE_ENTITLEMENTS: ${STRIPE_PRICE_ENTITLEMENTS:-}
+      STRIPE_FREE_PLAN: ${STRIPE_FREE_PLAN:-free}
+      STRIPE_FREE_QUOTA_CONFIG: ${STRIPE_FREE_QUOTA_CONFIG:-}
+      STRIPE_ENTITLEMENT_SYNC_URL: ${STRIPE_ENTITLEMENT_SYNC_URL:-http://dashboard_api:8001/api/v1/billing/stripe/entitlements}
+      STRIPE_ENTITLEMENT_SYNC_SECRET: ${STRIPE_ENTITLEMENT_SYNC_SECRET:-}
+    networks:
+      - king-search-network
+    depends_on:
+      - dashboard_api
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Same-origin edge for browser REST and WebSocket traffic.
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: king-search-nginx
+    ports:
+      - "${HTTP_PORT:-80}:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - king-search-network
+    depends_on:
+      - frontend
+      - dashboard_api
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget --quiet --tries=1 --spider http://127.0.0.1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Dashboard API Backend (reference only - actual backend should be in separate service)
+  dashboard_api:
+    image: king-search-api:latest
+    container_name: king-search-api
+    expose:
+      - "8001"
+    environment:
+      DATABASE_URL: postgresql://user:password@postgres:5432/king_search
+      REDIS_URL: redis://redis:6379/0
+      CELERY_ENABLED: "true"
+      CELERY_REDIS_DB: "1"
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?Set JWT_SECRET_KEY in the deployment environment}
+      JWT_EXPIRATION_HOURS: "24"
+      CORS_EXTRA_ORIGINS: ${CORS_EXTRA_ORIGINS:-}
+      STRIPE_ENTITLEMENT_SYNC_SECRET: ${STRIPE_ENTITLEMENT_SYNC_SECRET:-}
+    networks:
+      - king-search-network
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  celery-worker:
+    image: python:3.11-slim
+    container_name: king-search-celery-worker
+    working_dir: /workspace
+    command: >
+      bash -lc "pip install -r /workspace/setup/requirements.txt && celery -A dashboard_api.workers.celery_app worker --loglevel=info -Q king_search.default,king_search.priority"
+    volumes:
+      - ..:/workspace
+    environment:
+      - PYTHONPATH=/workspace
+      - DATABASE_URL=postgresql://user:password@postgres:5432/king_search
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_ENABLED=true
+      - CELERY_REDIS_DB=1
+    networks:
+      - king-search-network
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  celery-beat:
+    image: python:3.11-slim
+    container_name: king-search-celery-beat
+    working_dir: /workspace
+    command: >
+      bash -lc "pip install -r /workspace/setup/requirements.txt && celery -A dashboard_api.workers.celery_app beat --loglevel=info"
+    volumes:
+      - ..:/workspace
+    environment:
+      - PYTHONPATH=/workspace
+      - DATABASE_URL=postgresql://user:password@postgres:5432/king_search
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_ENABLED=true
+      - CELERY_REDIS_DB=1
+    networks:
+      - king-search-network
+    depends_on:
+      - postgres
+      - redis
+    restart: unless-stopped
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: king-search-postgres
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=king_search
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - king-search-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d king_search"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching and rate limiting
+  redis:
+    image: redis:7-alpine
+    container_name: king-search-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - king-search-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+networks:
+  king-search-network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
